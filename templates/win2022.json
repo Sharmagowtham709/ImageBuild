@@ -1,0 +1,60 @@
+{
+  "type": "Microsoft.VirtualMachineImages",
+  "apiVersion": "2022-07-01",
+  "location": "eastus",
+  "properties": {
+    "buildTimeoutInMinutes": 120,
+    "source": {
+      "type": "PlatformImage",
+      "publisher": "microsoftwindowsserver",
+      "offer": "windowsserver-cis",
+      "sku": "2022-datacenter-cis",
+      "version": "latest"
+    },
+    "customize": [
+      {
+        "type": "PowerShell",
+        "name": "InstallBasicFeatures",
+        "inline": [
+          "Install-WindowsFeature -Name Web-Server,Web-Asp-Net45,NET-Framework-45-Features"
+        ]
+      },
+      {
+        "type": "PowerShell",
+        "name": "InstallMonitoring",
+        "inline": [
+          "# Install Azure Monitor Agent",
+          "Invoke-WebRequest -Uri https://aka.ms/InstallAzureMonitorAgentWindows -OutFile InstallAMA.ps1",
+          "powershell -ExecutionPolicy Bypass -File .\\InstallAMA.ps1"
+        ]
+      },
+      {
+        "type": "PowerShell",
+        "name": "SecurityHardening",
+        "inline": [
+          "# Enable Windows Defender",
+          "Set-MpPreference -DisableRealtimeMonitoring $false",
+          "# Configure Windows Firewall",
+          "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True",
+          "# Disable RDP by default",
+          "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 1"
+        ]
+      }
+    ],
+    "distribute": [
+      {
+        "type": "SharedImage",
+        "runOutputName": "win2022_$(date +'%Y%m%d')",
+        "artifactTags": {
+          "source": "azVmImageBuilder",
+          "baseOS": "windows2022",
+          "type": "cis-hardened"
+        },
+        "replicationRegions": [
+          "eastus",
+          "westus2"
+        ]
+      }
+    ]
+  }
+}

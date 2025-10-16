@@ -1,0 +1,67 @@
+{
+  "type": "Microsoft.VirtualMachineImages",
+  "apiVersion": "2022-07-01",
+  "location": "eastus",
+  "properties": {
+    "buildTimeoutInMinutes": 120,
+    "source": {
+      "type": "PlatformImage",
+      "publisher": "RedHat",
+      "offer": "RHEL",
+      "sku": "8-gen2",
+      "version": "latest"
+    },
+    "customize": [
+      {
+        "type": "Shell",
+        "name": "UpdateSystem",
+        "inline": [
+          "# Update system packages",
+          "dnf update -y",
+          "dnf install -y ca-certificates curl"
+        ]
+      },
+      {
+        "type": "Shell",
+        "name": "InstallMonitoring",
+        "inline": [
+          "# Install Azure Monitor Agent",
+          "wget https://aka.ms/amagent -O AMAInstaller.sh",
+          "chmod +x AMAInstaller.sh",
+          "sudo ./AMAInstaller.sh"
+        ]
+      },
+      {
+        "type": "Shell",
+        "name": "SecurityHardening",
+        "inline": [
+          "# Install security tools",
+          "dnf install -y aide audit",
+          "# Configure SSH",
+          "sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config",
+          "sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config",
+          "# Enable SELinux",
+          "sed -i 's/SELINUX=permissive/SELINUX=enforcing/' /etc/selinux/config",
+          "# Initialize AIDE",
+          "aide --init",
+          "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+        ]
+      }
+    ],
+    "distribute": [
+      {
+        "type": "SharedImage",
+        "runOutputName": "rhel8_$(date +'%Y%m%d')",
+        "artifactTags": {
+          "source": "azVmImageBuilder",
+          "baseOS": "rhel8",
+          "type": "cis-hardened"
+        },
+        "replicationRegions": [
+          "eastus",
+          "westus2"
+        ]
+      }
+    ]
+  }
+}

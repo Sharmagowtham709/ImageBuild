@@ -1,0 +1,67 @@
+{
+  "type": "Microsoft.VirtualMachineImages",
+  "apiVersion": "2022-07-01",
+  "location": "eastus",
+  "properties": {
+    "buildTimeoutInMinutes": 120,
+    "source": {
+      "type": "PlatformImage",
+      "publisher": "Canonical",
+      "offer": "0001-com-ubuntu-server-focal",
+      "sku": "20_04-lts-gen2",
+      "version": "latest"
+    },
+    "customize": [
+      {
+        "type": "Shell",
+        "name": "UpdateSystem",
+        "inline": [
+          "apt-get update",
+          "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y",
+          "DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl apt-transport-https lsb-release gnupg"
+        ]
+      },
+      {
+        "type": "Shell",
+        "name": "InstallMonitoring",
+        "inline": [
+          "# Install Azure Monitor Agent",
+          "wget https://aka.ms/amagent -O AMAInstaller.sh",
+          "chmod +x AMAInstaller.sh",
+          "sudo ./AMAInstaller.sh"
+        ]
+      },
+      {
+        "type": "Shell",
+        "name": "SecurityHardening",
+        "inline": [
+          "# Install security tools",
+          "apt-get install -y unattended-upgrades aide auditd",
+          "# Configure automatic updates",
+          "echo 'Unattended-Upgrade::Automatic-Reboot \"false\";' >> /etc/apt/apt.conf.d/50unattended-upgrades",
+          "# Configure SSH",
+          "sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config",
+          "sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config",
+          "# Initialize AIDE",
+          "aide --init",
+          "mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db"
+        ]
+      }
+    ],
+    "distribute": [
+      {
+        "type": "SharedImage",
+        "runOutputName": "ubuntu2004_$(date +'%Y%m%d')",
+        "artifactTags": {
+          "source": "azVmImageBuilder",
+          "baseOS": "ubuntu2004",
+          "type": "cis-hardened"
+        },
+        "replicationRegions": [
+          "eastus",
+          "westus2"
+        ]
+      }
+    ]
+  }
+}

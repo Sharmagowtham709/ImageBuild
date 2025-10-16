@@ -1,0 +1,199 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - azure-image-build/**
+
+parameters:
+- name: imageType
+  type: string
+  default: 'all'
+  values:
+  - all
+  - windows2022
+  - ubuntu2004
+  - rhel8
+- name: notifyEmail
+  type: string
+  default: ''
+  displayName: 'Notification Email (optional)'
+- name: enableDetailedLogging
+  type: boolean
+  default: false
+  displayName: 'Enable Detailed Logging'
+
+variables:
+  - group: ImageBuilder-Variables  # Variable group containing gallery details
+  - name: imageVersion
+    value: '$(Build.BuildNumber)'
+  - name: System.Debug
+    value: ${{ parameters.enableDetailedLogging }}
+  - name: logsPath
+    value: '$(Build.ArtifactStagingDirectory)/logs'
+
+stages:
+- stage: Initialize
+  displayName: 'Initialize Build'
+  jobs:
+  - job: Setup
+    steps:
+    - task: PowerShell@2
+      displayName: 'Create Log Directory'
+      inputs:
+        targetType: 'inline'
+        script: |
+          New-Item -ItemType Directory -Force -Path "$(logsPath)"
+          "Build started at $(Get-Date)" | Out-File "$(logsPath)/build.log"
+
+    - task: AzurePowerShell@5
+      displayName: 'Validate Gallery Access'
+      inputs:
+        azureSubscription: 'Azure-Connection'
+        ScriptType: 'InlineScript'
+        errorActionPreference: 'Stop'
+        Inline: |
+          try {
+            "Checking gallery access..." | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+            $gallery = Get-AzGallery -ResourceGroupName "$(galleryResourceGroup)" -GalleryName "$(galleryName)"
+            if (-not $gallery) {
+                throw "Unable to access gallery $(galleryName)"
+            }
+            "Gallery access validated successfully" | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+            
+            # Check existing versions
+            $existingVersions = Get-AzGalleryImageVersion -ResourceGroupName "$(galleryResourceGroup)" `
+                -GalleryName "$(galleryName)" `
+                -GalleryImageDefinitionName "${{ parameters.imageType }}" `
+                -ErrorAction SilentlyContinue
+            
+            if ($existingVersions) {
+                "Found existing versions:" | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+                $existingVersions | ForEach-Object { "- $($_.Name)" } | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+            }
+          }
+          catch {
+            $_.Exception.Message | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+            throw
+          }
+
+- stage: BuildImage
+  displayName: 'Build Image'
+  dependsOn: Initialize
+  condition: succeeded()
+  jobs:
+  - job: BuildSelectedImage
+    timeoutInMinutes: 120
+    steps:
+    - task: PowerShell@2
+      displayName: 'Prepare Build Environment'
+      inputs:
+        targetType: 'inline'
+        script: |
+          "Starting image build at $(Get-Date)" | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+          "Image Type: ${{ parameters.imageType }}" | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+          "Version: $(imageVersion)" | Tee-Object -FilePath "$(logsPath)/build.log" -Append
+
+    - task: AzurePowerShell@5
+      displayName: 'Build Image'
+      inputs:
+        azureSubscription: 'Azure-Connection'
+        ScriptType: 'FilePath'
+        errorActionPreference: 'Stop'
+        ScriptPath: '$(System.DefaultWorkingDirectory)/azure-image-build/scripts/build-image.ps1'
+        ScriptArguments: >
+          -ImageType ${{ parameters.imageType }}
+          -Version $(imageVersion)
+          -GalleryName "$(galleryName)"
+          -GalleryResourceGroup "$(galleryResourceGroup)"
+          -LogPath "$(logsPath)/build.log"
+          
+    - task: PowerShell@2
+      displayName: 'Process Build Logs'
+      condition: always()
+      inputs:
+        targetType: 'inline'
+        script: |
+          if (Test-Path "$(logsPath)/build.log") {
+            Write-Host "##[section]Build Log Summary"
+            Get-Content "$(logsPath)/build.log" | Write-Host
+          }
+          
+          if ('${{ parameters.notifyEmail }}') {
+            $body = Get-Content "$(logsPath)/build.log" | Out-String
+            Send-MailMessage -To '${{ parameters.notifyEmail }}' `
+              -Subject "Image Build Result: ${{ parameters.imageType }}" `
+              -Body $body `
+              -From "noreply@yourcompany.com" `
+              -SmtpServer "smtp.yourcompany.com"
+          }
+
+- stage: ValidateImage
+  displayName: 'Validate Image'
+  dependsOn: BuildImage
+  condition: succeeded()
+  jobs:
+  - job: TestImage
+    steps:
+    - task: PowerShell@2
+      displayName: 'Prepare Test Environment'
+      inputs:
+        targetType: 'inline'
+        script: |
+          "Starting image validation at $(Get-Date)" | Tee-Object -FilePath "$(logsPath)/validation.log" -Append
+          "Image Type: ${{ parameters.imageType }}" | Tee-Object -FilePath "$(logsPath)/validation.log" -Append
+          "Version: $(imageVersion)" | Tee-Object -FilePath "$(logsPath)/validation.log" -Append
+
+    - task: AzurePowerShell@5
+      displayName: 'Run Image Tests'
+      inputs:
+        azureSubscription: 'Azure-Connection'
+        ScriptType: 'FilePath'
+        errorActionPreference: 'Stop'
+        ScriptPath: '$(System.DefaultWorkingDirectory)/azure-image-build/tests/validate-image.ps1'
+        ScriptArguments: >
+          -ImageType ${{ parameters.imageType }}
+          -Version $(imageVersion)
+          -GalleryName "$(galleryName)"
+          -GalleryResourceGroup "$(galleryResourceGroup)"
+          -LogPath "$(logsPath)/validation.log"
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/test-results.xml'
+        testRunTitle: 'Image Validation Results'
+        failTaskOnFailedTests: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Build Logs'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(logsPath)'
+        ArtifactName: 'BuildLogs'
+        publishLocation: 'Container'
+
+    - task: PowerShell@2
+      displayName: 'Send Validation Results'
+      condition: always()
+      inputs:
+        targetType: 'inline'
+        script: |
+          $testResults = [xml](Get-Content "**/test-results.xml")
+          $summary = "Test Results:`n"
+          $summary += "Total Tests: $($testResults.testsuites.testsuite.tests)`n"
+          $summary += "Failures: $($testResults.testsuites.testsuite.failures)`n"
+          
+          $summary | Tee-Object -FilePath "$(logsPath)/validation.log" -Append
+          
+          if ('${{ parameters.notifyEmail }}') {
+            $body = Get-Content "$(logsPath)/validation.log" | Out-String
+            Send-MailMessage -To '${{ parameters.notifyEmail }}' `
+              -Subject "Image Validation Result: ${{ parameters.imageType }}" `
+              -Body $body `
+              -From "noreply@yourcompany.com" `
+              -SmtpServer "smtp.yourcompany.com"
+          }
